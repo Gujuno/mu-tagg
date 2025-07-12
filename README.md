@@ -1,7 +1,8 @@
 # mu-tagg
 
 A modern Qt-based audio tag editor with drag-and-drop support, inspired by MP3tag. This application provides an intuitive interface for editing metadata tags in audio files with support for multiple formats and advanced features.
-Inspired by MP3tag. Created using Cursor AI Code Editor.
+Inspired by MP3tag. Created using Cursor AI Code Editor.  
+
 This project is not affiliated with, associated with, or endorsed by Mp3tag or its creators. All trademarks and copyrights belong to their respective owners. This is an independent project developed for educational and personal use.
 
 ## Features
