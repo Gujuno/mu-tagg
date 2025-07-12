@@ -1,1 +1,0 @@
-/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/mu-tagg.dir/link.d "CMakeFiles/mu-tagg.dir/mu-tagg_autogen/mocs_compilation.cpp.o" "CMakeFiles/mu-tagg.dir/src/main.cpp.o" "CMakeFiles/mu-tagg.dir/src/MainWindow.cpp.o" -o mu-tagg  /usr/lib/libQt5Widgets.so.5.15.17 /usr/lib/libtag.so /usr/lib/libQt5Gui.so.5.15.17 /usr/lib/libQt5Core.so.5.15.17
