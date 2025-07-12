@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/raoul/projects/mu-tagg/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
