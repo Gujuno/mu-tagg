@@ -73,3 +73,9 @@ Thumbs.db
 # Backup files
 *.bak
 *.backup
+
+# Application configuration files
+config/
+*.conf
+*.ini
+settings/
