@@ -25,6 +25,7 @@
 #include <taglib/apefile.h>
 #include <taglib/mp4file.h>
 #include <taglib/id3v2frame.h>
+#include <taglib/textidentificationframe.h>
 #include <taglib/attachedpictureframe.h>
 #include <taglib/flacpicture.h>
 #include <QDebug>
@@ -76,6 +77,7 @@ MainWindow::MainWindow(QWidget *parent)
     albumArtistEdit = new QLineEdit(tagEditorWidget);
     composerEdit = new QLineEdit(tagEditorWidget);
     diskEdit = new QLineEdit(tagEditorWidget);
+    diskEdit->setObjectName("diskEdit");
     diskEdit->setMaximumWidth(60);
     
     // Add label-field pairs with labels above fields
@@ -207,15 +209,15 @@ MainWindow::MainWindow(QWidget *parent)
     connect(saveButton, &QPushButton::clicked, this, &MainWindow::onSaveClicked);
     connect(table->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]{ onTableSelectionChanged(); });
     connect(titleEdit, &QLineEdit::editingFinished, this, &MainWindow::onTagEditorFieldChanged);
-    connect(artistEdit, &QLineEdit::editingFinished, this, &MainWindow::onTagEditorFieldChanged);
+    connect(artistEdit, &QLineEdit::editingFinished, this, &MainWindow::onArtistEditFinished);
     connect(albumEdit, &QLineEdit::editingFinished, this, &MainWindow::onTagEditorFieldChanged);
     connect(yearEdit, &QLineEdit::editingFinished, this, &MainWindow::onTagEditorFieldChanged);
     connect(trackEdit, &QLineEdit::editingFinished, this, &MainWindow::onTagEditorFieldChanged);
-    connect(genreEdit, &QLineEdit::editingFinished, this, &MainWindow::onTagEditorFieldChanged);
+    connect(genreEdit, &QLineEdit::editingFinished, this, &MainWindow::onGenreEditFinished);
     commentEdit->installEventFilter(this);
-    connect(albumArtistEdit, &QLineEdit::editingFinished, this, &MainWindow::onTagEditorFieldChanged);
-    connect(composerEdit, &QLineEdit::editingFinished, this, &MainWindow::onTagEditorFieldChanged);
-    connect(diskEdit, &QLineEdit::editingFinished, this, &MainWindow::onTagEditorFieldChanged);
+    connect(albumArtistEdit, &QLineEdit::editingFinished, this, &MainWindow::onAlbumArtistEditFinished);
+    connect(composerEdit, &QLineEdit::editingFinished, this, &MainWindow::onComposerEditFinished);
+    connect(diskEdit, &QLineEdit::editingFinished, this, &MainWindow::onDiskEditFinished);
     
     // Initialize config save timer for debouncing
     configSaveTimer = new QTimer(this);
@@ -299,6 +301,7 @@ void MainWindow::loadTags(const QString &filePath, AudioFileInfo &info) {
             info.albumArtist = comment->fieldListMap().contains("ALBUMARTIST") ? QString::fromStdWString(comment->fieldListMap()["ALBUMARTIST"].toString().toWString()) : "";
             info.composer = comment->fieldListMap().contains("COMPOSER") ? QString::fromStdWString(comment->fieldListMap()["COMPOSER"].toString().toWString()) : "";
             info.disk = comment->fieldListMap().contains("DISCNUMBER") ? QString::fromStdWString(comment->fieldListMap()["DISCNUMBER"].toString().toWString()) : "";
+            qDebug() << "[loadTags] FLAC disc number loaded:" << info.disk;
             info.track = QString::number(flacFile.tag() ? flacFile.tag()->track() : 0);
             qDebug() << "[loadTags]" << filePath << "title:" << info.title;
         }
@@ -316,14 +319,28 @@ void MainWindow::loadTags(const QString &filePath, AudioFileInfo &info) {
             info.albumArtist = "";
             info.composer = "";
             info.disk = "";
-            // Track number: use file type specific API
+            // Track number and disc number: use file type specific API
             if (filePath.endsWith(".mp3", Qt::CaseInsensitive)) {
                 TagLib::MPEG::File mpegFile(filePath.toStdString().c_str());
                 if (mpegFile.isValid() && mpegFile.tag()) {
                     info.track = QString::number(mpegFile.tag()->track());
+                    // Load disc number from ID3v2
+                    if (TagLib::ID3v2::Tag *id3v2Tag = mpegFile.ID3v2Tag()) {
+                        TagLib::ID3v2::FrameList discFrames = id3v2Tag->frameListMap()["TPOS"];
+                        if (!discFrames.isEmpty()) {
+                            info.disk = QString::fromStdString(discFrames.front()->toString().to8Bit());
+                        }
+                    }
                 }
             } else {
                 info.track = "";
+                // Try to load disc number from other file types
+                if (TagLib::ID3v2::Tag *id3v2Tag = dynamic_cast<TagLib::ID3v2::Tag*>(tag)) {
+                    TagLib::ID3v2::FrameList discFrames = id3v2Tag->frameListMap()["TPOS"];
+                    if (!discFrames.isEmpty()) {
+                        info.disk = QString::fromStdString(discFrames.front()->toString().to8Bit());
+                    }
+                }
             }
         }
     }
@@ -335,6 +352,20 @@ void MainWindow::onSaveClicked() {
     // Update all fields if they have focus (to capture any pending changes)
     QModelIndexList selected = table->selectionModel()->selectedRows();
     if (!selected.isEmpty()) {
+        // Capture field values before they might get cleared by focus change
+        QString currentTitle = titleEdit->text();
+        QString currentArtist = artistEdit->text();
+        QString currentAlbum = albumEdit->text();
+        QString currentYear = yearEdit->text();
+        QString currentTrack = trackEdit->text();
+        QString currentGenre = genreEdit->text();
+        QString currentComment = commentEdit->toPlainText();
+        QString currentAlbumArtist = albumArtistEdit->text();
+        QString currentComposer = composerEdit->text();
+        QString currentDisk = diskEdit->text();
+        
+        qDebug() << "[onSaveClicked] Captured field values - title:" << currentTitle << "disk:" << currentDisk;
+        
         // Check if any field has focus and update accordingly
         if (commentEdit->hasFocus()) {
             qDebug() << "[onSaveClicked] Comment field has focus, updating comment";
@@ -347,18 +378,17 @@ void MainWindow::onSaveClicked() {
         } else {
             // Check if any field values differ from the first selected file
             const AudioFileInfo &firstInfo = audioFiles[selected.first().row()];
-            QString currentComment = commentEdit->toPlainText();
             if (currentComment != firstInfo.comment) {
                 qDebug() << "[onSaveClicked] Comment text differs from file, updating comment";
                 onCommentEditFinished();
             }
             
-            // Check other fields for differences
-            if (titleEdit->text() != firstInfo.title || artistEdit->text() != firstInfo.artist ||
-                albumEdit->text() != firstInfo.album || yearEdit->text() != firstInfo.year ||
-                trackEdit->text() != firstInfo.track || genreEdit->text() != firstInfo.genre ||
-                albumArtistEdit->text() != firstInfo.albumArtist || composerEdit->text() != firstInfo.composer ||
-                diskEdit->text() != firstInfo.disk) {
+            // Check other fields for differences using captured values
+            if (currentTitle != firstInfo.title || currentArtist != firstInfo.artist ||
+                currentAlbum != firstInfo.album || currentYear != firstInfo.year ||
+                currentTrack != firstInfo.track || currentGenre != firstInfo.genre ||
+                currentAlbumArtist != firstInfo.albumArtist || currentComposer != firstInfo.composer ||
+                currentDisk != firstInfo.disk) {
                 qDebug() << "[onSaveClicked] Other fields differ from file, updating fields";
                 onTagEditorFieldChanged();
             }
@@ -387,6 +417,8 @@ void MainWindow::onSaveClicked() {
     updatingTable = false;
     
     qDebug() << "[onSaveClicked] Save process completed";
+    hasUnsavedChanges = false;
+    qDebug() << "[onSaveClicked] Cleared unsaved changes flag";
     // No pop-up after saving
 }
 
@@ -394,6 +426,7 @@ void MainWindow::saveTags(const AudioFileInfo &info) {
     qDebug() << "[saveTags] Starting to save tags for:" << info.filePath;
     auto safe = [](const QString &val) { return !val.isEmpty() && val != "[Mixed]"; };
     qDebug() << "[saveTags] About to save comment for:" << info.filePath << "comment:" << info.comment;
+    qDebug() << "[saveTags] Disc number value:" << info.disk << "safe:" << safe(info.disk);
     if (info.filePath.endsWith(".flac", Qt::CaseInsensitive)) {
         qDebug() << "[saveTags] Processing FLAC file";
         TagLib::FLAC::File flacFile(info.filePath.toStdString().c_str());
@@ -418,8 +451,10 @@ void MainWindow::saveTags(const AudioFileInfo &info) {
             if (safe(info.composer)) comment->addField("COMPOSER", info.composer.toStdWString(), true);
             if (safe(info.disk)) {
                 comment->addField("DISCNUMBER", info.disk.toStdWString(), true);
+                qDebug() << "[saveTags] FLAC: Set disc number to:" << info.disk;
             } else {
                 comment->removeFields("DISCNUMBER");
+                qDebug() << "[saveTags] FLAC: Clearing disc number field for:" << info.filePath;
             }
             bool ok = false;
             uint trackNum = info.track.toUInt(&ok);
@@ -460,6 +495,29 @@ void MainWindow::saveTags(const AudioFileInfo &info) {
                     qDebug() << "[saveTags] Set track number to:" << trackNum;
                 }
                 
+                // Disc number - use ID3v2 frame for MP3
+                if (safe(info.disk)) {
+                    TagLib::ID3v2::Tag *id3v2Tag = mpegFile.ID3v2Tag();
+                    if (id3v2Tag) {
+                        TagLib::ID3v2::FrameList discFrames = id3v2Tag->frameListMap()["TPOS"];
+                        if (!discFrames.isEmpty()) {
+                            discFrames.front()->setText(info.disk.toStdString());
+                        } else {
+                            TagLib::ID3v2::TextIdentificationFrame *discFrame = new TagLib::ID3v2::TextIdentificationFrame("TPOS", TagLib::String::Latin1);
+                            discFrame->setText(info.disk.toStdString());
+                            id3v2Tag->addFrame(discFrame);
+                        }
+                        qDebug() << "[saveTags] Set disc number to:" << info.disk;
+                    }
+                } else if (info.disk.isEmpty()) {
+                    // Explicitly clear the disc number field
+                    TagLib::ID3v2::Tag *id3v2Tag = mpegFile.ID3v2Tag();
+                    if (id3v2Tag) {
+                        id3v2Tag->removeFrames("TPOS");
+                        qDebug() << "[saveTags] Clearing disc number field for:" << info.filePath;
+                    }
+                }
+                
                 bool saveResult = mpegFile.save();
                 qDebug() << "[saveTags] MP3 save result:" << saveResult;
             } else {
@@ -494,6 +552,30 @@ void MainWindow::saveTags(const AudioFileInfo &info) {
                     qDebug() << "[saveTags] Set track number to:" << trackNum;
                 }
                 
+                // Disc number - try to save using available methods for other file types
+                if (safe(info.disk)) {
+                    // For other file types, we'll try to use ID3v2 if available
+                    if (TagLib::ID3v2::Tag *id3v2Tag = dynamic_cast<TagLib::ID3v2::Tag*>(tag)) {
+                        TagLib::ID3v2::FrameList discFrames = id3v2Tag->frameListMap()["TPOS"];
+                        if (!discFrames.isEmpty()) {
+                            discFrames.front()->setText(info.disk.toStdString());
+                        } else {
+                            TagLib::ID3v2::TextIdentificationFrame *discFrame = new TagLib::ID3v2::TextIdentificationFrame("TPOS", TagLib::String::Latin1);
+                            discFrame->setText(info.disk.toStdString());
+                            id3v2Tag->addFrame(discFrame);
+                        }
+                        qDebug() << "[saveTags] Set disc number to:" << info.disk;
+                    } else {
+                        qDebug() << "[saveTags] Could not save disc number - no ID3v2 tag available for file type";
+                    }
+                } else if (info.disk.isEmpty()) {
+                    // Explicitly clear the disc number field
+                    if (TagLib::ID3v2::Tag *id3v2Tag = dynamic_cast<TagLib::ID3v2::Tag*>(tag)) {
+                        id3v2Tag->removeFrames("TPOS");
+                        qDebug() << "[saveTags] Clearing disc number field for:" << info.filePath;
+                    }
+                }
+                
                 bool saveResult = f.file()->save();
                 qDebug() << "[saveTags] Non-MP3 save result:" << saveResult;
             } else {
@@ -518,6 +600,20 @@ void MainWindow::onTableSelectionChanged() {
     }
     // Multi-row: show [Mixed] if values differ, empty if all empty
     updatingTagEditor = true;
+    
+    // Don't reset fields that are currently being edited
+    bool titleHasFocus = titleEdit->hasFocus();
+    bool artistHasFocus = artistEdit->hasFocus();
+    bool albumHasFocus = albumEdit->hasFocus();
+    bool yearHasFocus = yearEdit->hasFocus();
+    bool trackHasFocus = trackEdit->hasFocus();
+    bool genreHasFocus = genreEdit->hasFocus();
+    bool commentHasFocus = commentEdit->hasFocus();
+    bool albumArtistHasFocus = albumArtistEdit->hasFocus();
+    bool composerHasFocus = composerEdit->hasFocus();
+    bool diskHasFocus = diskEdit->hasFocus();
+    
+    qDebug() << "[onTableSelectionChanged] Field focus states - title:" << titleHasFocus << "disk:" << diskHasFocus;
     auto getField = [&](auto getter) {
         QString firstValue;
         bool firstSet = false;
@@ -539,7 +635,13 @@ void MainWindow::onTableSelectionChanged() {
         if (mixed) return QString("[Mixed]");
         return firstValue;
     };
-    auto setEdit = [](QLineEdit *edit, const QString &val) {
+    auto setEdit = [](QLineEdit *edit, const QString &val, bool hasFocus) {
+        qDebug() << "[setEdit] Setting field to:" << val << "for field:" << edit->objectName() << "hasFocus:" << hasFocus;
+        // Don't reset fields that are currently being edited
+        if (hasFocus) {
+            qDebug() << "[setEdit] Skipping field" << edit->objectName() << "because it has focus";
+            return;
+        }
         if (val == "[Mixed]") {
             edit->clear();
             edit->setPlaceholderText("[Mixed]");
@@ -575,18 +677,19 @@ void MainWindow::onTableSelectionChanged() {
     };
     QString titleVal = getField([](const AudioFileInfo &a){return a.title;});
     QString commentVal = getField([](const AudioFileInfo &a){return a.comment;});
-    qDebug() << "[onTableSelectionChanged] Setting editor fields - title:" << titleVal << "comment:" << commentVal;
+    QString diskVal = getField([](const AudioFileInfo &a){return a.disk;});
+    qDebug() << "[onTableSelectionChanged] Setting editor fields - title:" << titleVal << "comment:" << commentVal << "disk:" << diskVal;
     
-    setEdit(titleEdit, titleVal);
-    setEdit(artistEdit, getField([](const AudioFileInfo &a){return a.artist;}));
-    setEdit(albumEdit, getField([](const AudioFileInfo &a){return a.album;}));
-    setEdit(yearEdit, getField([](const AudioFileInfo &a){return a.year;}));
-    setEdit(trackEdit, getField([](const AudioFileInfo &a){return a.track;}));
-    setEdit(genreEdit, getField([](const AudioFileInfo &a){return a.genre;}));
+    setEdit(titleEdit, titleVal, titleHasFocus);
+    setEdit(artistEdit, getField([](const AudioFileInfo &a){return a.artist;}), artistHasFocus);
+    setEdit(albumEdit, getField([](const AudioFileInfo &a){return a.album;}), albumHasFocus);
+    setEdit(yearEdit, getField([](const AudioFileInfo &a){return a.year;}), yearHasFocus);
+    setEdit(trackEdit, getField([](const AudioFileInfo &a){return a.track;}), trackHasFocus);
+    setEdit(genreEdit, getField([](const AudioFileInfo &a){return a.genre;}), genreHasFocus);
     setEditText(commentEdit, commentVal);
-    setEdit(albumArtistEdit, getField([](const AudioFileInfo &a){return a.albumArtist;}));
-    setEdit(composerEdit, getField([](const AudioFileInfo &a){return a.composer;}));
-    setEdit(diskEdit, getField([](const AudioFileInfo &a){return a.disk;}));
+    setEdit(albumArtistEdit, getField([](const AudioFileInfo &a){return a.albumArtist;}), albumArtistHasFocus);
+    setEdit(composerEdit, getField([](const AudioFileInfo &a){return a.composer;}), composerHasFocus);
+    setEdit(diskEdit, getField([](const AudioFileInfo &a){return a.disk;}), diskHasFocus);
     updatingTagEditor = false;
 }
 
@@ -607,6 +710,42 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
         qDebug() << "[eventFilter] Comment edit focus out detected";
         onCommentEditFinished();
     }
+    if (obj == titleEdit && event->type() == QEvent::FocusOut) {
+        qDebug() << "[eventFilter] Title edit focus out detected";
+        onTitleEditFinished();
+    }
+    if (obj == artistEdit && event->type() == QEvent::FocusOut) {
+        qDebug() << "[eventFilter] Artist edit focus out detected";
+        onArtistEditFinished();
+    }
+    if (obj == albumEdit && event->type() == QEvent::FocusOut) {
+        qDebug() << "[eventFilter] Album edit focus out detected";
+        onAlbumEditFinished();
+    }
+    if (obj == yearEdit && event->type() == QEvent::FocusOut) {
+        qDebug() << "[eventFilter] Year edit focus out detected";
+        onYearEditFinished();
+    }
+    if (obj == trackEdit && event->type() == QEvent::FocusOut) {
+        qDebug() << "[eventFilter] Track edit focus out detected";
+        onTrackEditFinished();
+    }
+    if (obj == genreEdit && event->type() == QEvent::FocusOut) {
+        qDebug() << "[eventFilter] Genre edit focus out detected";
+        onGenreEditFinished();
+    }
+    if (obj == albumArtistEdit && event->type() == QEvent::FocusOut) {
+        qDebug() << "[eventFilter] Album artist edit focus out detected";
+        onAlbumArtistEditFinished();
+    }
+    if (obj == composerEdit && event->type() == QEvent::FocusOut) {
+        qDebug() << "[eventFilter] Composer edit focus out detected";
+        onComposerEditFinished();
+    }
+    if (obj == diskEdit && event->type() == QEvent::FocusOut) {
+        qDebug() << "[eventFilter] Disk edit focus out detected";
+        onDiskEditFinished();
+    }
     return QMainWindow::eventFilter(obj, event);
 }
 
@@ -625,6 +764,157 @@ void MainWindow::onCommentEditFinished() {
         table->setItem(idx.row(), 5, new QTableWidgetItem(info.genre));
         updatingTable = false;
     }
+    markUnsavedChanges();
+}
+
+void MainWindow::onTitleEditFinished() {
+    if (updatingTagEditor) return;
+    QModelIndexList selected = table->selectionModel()->selectedRows();
+    if (selected.isEmpty()) return;
+    QString newTitle = titleEdit->text();
+    qDebug() << "[onTitleEditFinished] Updating title for" << selected.size() << "selected files to:" << newTitle;
+    for (const QModelIndex &idx : selected) {
+        AudioFileInfo &info = audioFiles[idx.row()];
+        info.title = newTitle;
+        qDebug() << "[onTitleEditFinished] Updated title for file:" << info.filePath << "to:" << info.title;
+        // Update table for each row
+        updatingTable = true;
+        table->setItem(idx.row(), 1, new QTableWidgetItem(info.title));
+        updatingTable = false;
+    }
+    markUnsavedChanges();
+}
+
+void MainWindow::onArtistEditFinished() {
+    if (updatingTagEditor) return;
+    QModelIndexList selected = table->selectionModel()->selectedRows();
+    if (selected.isEmpty()) return;
+    QString newArtist = artistEdit->text();
+    qDebug() << "[onArtistEditFinished] Updating artist for" << selected.size() << "selected files to:" << newArtist;
+    for (const QModelIndex &idx : selected) {
+        AudioFileInfo &info = audioFiles[idx.row()];
+        info.artist = newArtist;
+        qDebug() << "[onArtistEditFinished] Updated artist for file:" << info.filePath << "to:" << info.artist;
+        // Update table for each row
+        updatingTable = true;
+        table->setItem(idx.row(), 2, new QTableWidgetItem(info.artist));
+        updatingTable = false;
+    }
+    markUnsavedChanges();
+}
+
+void MainWindow::onAlbumEditFinished() {
+    if (updatingTagEditor) return;
+    QModelIndexList selected = table->selectionModel()->selectedRows();
+    if (selected.isEmpty()) return;
+    QString newAlbum = albumEdit->text();
+    qDebug() << "[onAlbumEditFinished] Updating album for" << selected.size() << "selected files to:" << newAlbum;
+    for (const QModelIndex &idx : selected) {
+        AudioFileInfo &info = audioFiles[idx.row()];
+        info.album = newAlbum;
+        qDebug() << "[onAlbumEditFinished] Updated album for file:" << info.filePath << "to:" << info.album;
+        // Update table for each row
+        updatingTable = true;
+        table->setItem(idx.row(), 3, new QTableWidgetItem(info.album));
+        updatingTable = false;
+    }
+    markUnsavedChanges();
+}
+
+void MainWindow::onYearEditFinished() {
+    if (updatingTagEditor) return;
+    QModelIndexList selected = table->selectionModel()->selectedRows();
+    if (selected.isEmpty()) return;
+    QString newYear = yearEdit->text();
+    qDebug() << "[onYearEditFinished] Updating year for" << selected.size() << "selected files to:" << newYear;
+    for (const QModelIndex &idx : selected) {
+        AudioFileInfo &info = audioFiles[idx.row()];
+        info.year = newYear;
+        qDebug() << "[onYearEditFinished] Updated year for file:" << info.filePath << "to:" << info.year;
+        // Update table for each row
+        updatingTable = true;
+        table->setItem(idx.row(), 4, new QTableWidgetItem(info.year));
+        updatingTable = false;
+    }
+    markUnsavedChanges();
+}
+
+void MainWindow::onTrackEditFinished() {
+    if (updatingTagEditor) return;
+    QModelIndexList selected = table->selectionModel()->selectedRows();
+    if (selected.isEmpty()) return;
+    QString newTrack = trackEdit->text();
+    qDebug() << "[onTrackEditFinished] Updating track for" << selected.size() << "selected files to:" << newTrack;
+    for (const QModelIndex &idx : selected) {
+        AudioFileInfo &info = audioFiles[idx.row()];
+        info.track = newTrack;
+        qDebug() << "[onTrackEditFinished] Updated track for file:" << info.track;
+        // Update table for each row
+        updatingTable = true;
+        table->setItem(idx.row(), 0, new QTableWidgetItem(info.track));
+        updatingTable = false;
+    }
+    markUnsavedChanges();
+}
+
+void MainWindow::onGenreEditFinished() {
+    if (updatingTagEditor) return;
+    QModelIndexList selected = table->selectionModel()->selectedRows();
+    if (selected.isEmpty()) return;
+    QString newGenre = genreEdit->text();
+    qDebug() << "[onGenreEditFinished] Updating genre for" << selected.size() << "selected files to:" << newGenre;
+    for (const QModelIndex &idx : selected) {
+        AudioFileInfo &info = audioFiles[idx.row()];
+        info.genre = newGenre;
+        qDebug() << "[onGenreEditFinished] Updated genre for file:" << info.filePath << "to:" << info.genre;
+        // Update table for each row
+        updatingTable = true;
+        table->setItem(idx.row(), 5, new QTableWidgetItem(info.genre));
+        updatingTable = false;
+    }
+    markUnsavedChanges();
+}
+
+void MainWindow::onAlbumArtistEditFinished() {
+    if (updatingTagEditor) return;
+    QModelIndexList selected = table->selectionModel()->selectedRows();
+    if (selected.isEmpty()) return;
+    QString newAlbumArtist = albumArtistEdit->text();
+    qDebug() << "[onAlbumArtistEditFinished] Updating album artist for" << selected.size() << "selected files to:" << newAlbumArtist;
+    for (const QModelIndex &idx : selected) {
+        AudioFileInfo &info = audioFiles[idx.row()];
+        info.albumArtist = newAlbumArtist;
+        qDebug() << "[onAlbumArtistEditFinished] Updated album artist for file:" << info.filePath << "to:" << info.albumArtist;
+    }
+    markUnsavedChanges();
+}
+
+void MainWindow::onComposerEditFinished() {
+    if (updatingTagEditor) return;
+    QModelIndexList selected = table->selectionModel()->selectedRows();
+    if (selected.isEmpty()) return;
+    QString newComposer = composerEdit->text();
+    qDebug() << "[onComposerEditFinished] Updating composer for" << selected.size() << "selected files to:" << newComposer;
+    for (const QModelIndex &idx : selected) {
+        AudioFileInfo &info = audioFiles[idx.row()];
+        info.composer = newComposer;
+        qDebug() << "[onComposerEditFinished] Updated composer for file:" << info.filePath << "to:" << info.composer;
+    }
+    markUnsavedChanges();
+}
+
+void MainWindow::onDiskEditFinished() {
+    if (updatingTagEditor) return;
+    QModelIndexList selected = table->selectionModel()->selectedRows();
+    if (selected.isEmpty()) return;
+    QString newDisk = diskEdit->text();
+    qDebug() << "[onDiskEditFinished] Updating disk for" << selected.size() << "selected files to:" << newDisk;
+    for (const QModelIndex &idx : selected) {
+        AudioFileInfo &info = audioFiles[idx.row()];
+        info.disk = newDisk;
+        qDebug() << "[onDiskEditFinished] Updated disk for file:" << info.filePath << "to:" << info.disk;
+    }
+    markUnsavedChanges();
 }
 
 void MainWindow::updateCoverArt(int row) {
@@ -825,19 +1115,36 @@ void MainWindow::onTagEditorFieldChanged() {
     qDebug() << "[onTagEditorFieldChanged] Updating" << selected.size() << "selected files";
     qDebug() << "[onTagEditorFieldChanged] Current editor values - title:" << titleEdit->text() << "comment:" << commentEdit->toPlainText();
     
-    // Get current editor values
-    QString newTitle = titleEdit->text();
-    QString newArtist = artistEdit->text();
-    QString newAlbum = albumEdit->text();
-    QString newYear = yearEdit->text();
-    QString newTrack = trackEdit->text();
-    QString newGenre = genreEdit->text();
-    QString newComment = commentEdit->toPlainText();
-    QString newAlbumArtist = albumArtistEdit->text();
-    QString newComposer = composerEdit->text();
-    QString newDisk = diskEdit->text();
+    // Get current editor values - handle [Mixed] placeholder text
+    auto getFieldValue = [](QLineEdit *edit) {
+        QString text = edit->text();
+        QString placeholder = edit->placeholderText();
+        qDebug() << "[getFieldValue] Field:" << edit->objectName() << "text:" << text << "placeholder:" << placeholder;
+        
+        // If the field is empty and has [Mixed] placeholder, return [Mixed]
+        if (text.isEmpty() && placeholder == "[Mixed]") {
+            return QString("[Mixed]");
+        }
+        // If the field has text, return the text (even if it's the same as the original value)
+        if (!text.isEmpty()) {
+            return text;
+        }
+        // If the field is empty and has no placeholder, return empty string
+        return text;
+    };
     
-    qDebug() << "[onTagEditorFieldChanged] Extracted values - title:" << newTitle << "comment:" << newComment;
+    QString newTitle = getFieldValue(titleEdit);
+    QString newArtist = getFieldValue(artistEdit);
+    QString newAlbum = getFieldValue(albumEdit);
+    QString newYear = getFieldValue(yearEdit);
+    QString newTrack = getFieldValue(trackEdit);
+    QString newGenre = getFieldValue(genreEdit);
+    QString newComment = commentEdit->toPlainText();
+    QString newAlbumArtist = getFieldValue(albumArtistEdit);
+    QString newComposer = getFieldValue(composerEdit);
+    QString newDisk = getFieldValue(diskEdit);
+    
+    qDebug() << "[onTagEditorFieldChanged] Extracted values - title:" << newTitle << "comment:" << newComment << "disk:" << newDisk;
     
     // For multi-selection, only update fields that have been explicitly changed
     if (selected.size() > 1) {
@@ -922,6 +1229,7 @@ void MainWindow::onTagEditorFieldChanged() {
         table->setItem(idx.row(), 5, new QTableWidgetItem(info.genre));
         updatingTable = false;
     }
+    markUnsavedChanges();
     qDebug() << "[onTagEditorFieldChanged] EXIT";
 }
 
@@ -986,8 +1294,30 @@ void MainWindow::loadConfig() {
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
+    if (hasUnsavedChanges) {
+        QMessageBox::StandardButton reply = QMessageBox::question(
+            this, 
+            "Unsaved Changes", 
+            "You have unsaved changes, do you wish to save?",
+            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel
+        );
+        
+        if (reply == QMessageBox::Save) {
+            onSaveClicked();
+            hasUnsavedChanges = false;
+        } else if (reply == QMessageBox::Cancel) {
+            event->ignore();
+            return;
+        }
+    }
+    
     saveConfig();
     QMainWindow::closeEvent(event);
+}
+
+void MainWindow::markUnsavedChanges() {
+    hasUnsavedChanges = true;
+    qDebug() << "[markUnsavedChanges] Marked unsaved changes";
 }
 
 void MainWindow::updateCoverArtSize() {

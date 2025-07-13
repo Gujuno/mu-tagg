@@ -57,6 +57,15 @@ private slots:
     void onTableSelectionChanged();
     void onTagEditorFieldChanged();
     void onCommentEditFinished();
+    void onTitleEditFinished();
+    void onArtistEditFinished();
+    void onAlbumEditFinished();
+    void onYearEditFinished();
+    void onTrackEditFinished();
+    void onGenreEditFinished();
+    void onAlbumArtistEditFinished();
+    void onComposerEditFinished();
+    void onDiskEditFinished();
     void onDelayedSaveConfig();
     void openFiles();
     void openDirectory();
@@ -73,6 +82,7 @@ private:
     void loadConfig();
     void updateCoverArtSize();
     QStringList scanDirectoryRecursively(const QString &dirPath);
+    void markUnsavedChanges();
 
     QTableWidget *table;
     QPushButton *saveButton;
@@ -99,6 +109,9 @@ private:
     
     // Config save debouncing
     QTimer *configSaveTimer;
+    
+    // Unsaved changes tracking
+    bool hasUnsavedChanges = false;
     
     // Menu bar
     QMenu *fileMenu;
